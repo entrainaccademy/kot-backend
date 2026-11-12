@@ -1,0 +1,337 @@
+import { Request, Response, NextFunction } from "express";
+import * as orderService from "../services/orderService";
+
+const getParamId = (req: Request, key: string = "id"): string => {
+  const val = req.params[key];
+  return (Array.isArray(val) ? val[0] : val) || "";
+};
+
+const getRestaurantId = (req: Request): string => {
+  return req.user?.restaurantId || "";
+};
+
+// -------------------------------------------------------------
+// 1. ORDER CONTROLLERS
+// -------------------------------------------------------------
+
+export const createOrderHandler = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const restaurantId = getRestaurantId(req);
+    const order = await orderService.createOrder(
+      restaurantId,
+      req.body,
+      req.user!.id
+    );
+    res.status(201).json({
+      success: true,
+      message: "Order created successfully.",
+      data: order,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to create order";
+    res.status(400).json({ success: false, message });
+  }
+};
+
+export const getOrdersHandler = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const restaurantId = getRestaurantId(req);
+    const result = await orderService.getOrders(restaurantId, req.query);
+    res.status(200).json({
+      success: true,
+      data: result.orders,
+      pagination: result.pagination,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getOrderByIdHandler = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const restaurantId = getRestaurantId(req);
+    const id = getParamId(req);
+    const result = await orderService.getOrderById(restaurantId, id);
+    res.status(200).json({
+      success: true,
+      data: result.order,
+      kots: result.kots,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Order not found";
+    res.status(404).json({ success: false, message });
+  }
+};
+
+export const updateOrderHandler = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const restaurantId = getRestaurantId(req);
+    const id = getParamId(req);
+    const updated = await orderService.updateOrder(
+      restaurantId,
+      id,
+      req.body,
+      req.user!.id
+    );
+    res.status(200).json({
+      success: true,
+      message: "Order updated successfully.",
+      data: updated,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to update order";
+    res.status(400).json({ success: false, message });
+  }
+};
+
+export const addItemsToOrderHandler = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const restaurantId = getRestaurantId(req);
+    const id = getParamId(req);
+    const updated = await orderService.addItemsToOrder(
+      restaurantId,
+      id,
+      req.body.items,
+      req.user!.id
+    );
+    res.status(200).json({
+      success: true,
+      message: "Items added to order successfully.",
+      data: updated,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to add items to order";
+    res.status(400).json({ success: false, message });
+  }
+};
+
+export const updateOrderItemHandler = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const restaurantId = getRestaurantId(req);
+    const orderId = getParamId(req, "id");
+    const itemId = getParamId(req, "itemId");
+    const updated = await orderService.updateOrderItem(
+      restaurantId,
+      orderId,
+      itemId,
+      req.body,
+      req.user!.id
+    );
+    res.status(200).json({
+      success: true,
+      message: "Order item updated successfully.",
+      data: updated,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to update order item";
+    res.status(400).json({ success: false, message });
+  }
+};
+
+export const deleteOrderItemHandler = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const restaurantId = getRestaurantId(req);
+    const orderId = getParamId(req, "id");
+    const itemId = getParamId(req, "itemId");
+    const updated = await orderService.deleteOrderItem(
+      restaurantId,
+      orderId,
+      itemId,
+      req.user!.id
+    );
+    res.status(200).json({
+      success: true,
+      message: "Order item removed successfully.",
+      data: updated,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to remove order item";
+    res.status(400).json({ success: false, message });
+  }
+};
+
+export const cancelOrderHandler = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const restaurantId = getRestaurantId(req);
+    const id = getParamId(req);
+    const cancelled = await orderService.cancelOrder(
+      restaurantId,
+      id,
+      req.body.reason,
+      req.user!.id
+    );
+    res.status(200).json({
+      success: true,
+      message: "Order cancelled successfully.",
+      data: cancelled,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to cancel order";
+    res.status(400).json({ success: false, message });
+  }
+};
+
+// -------------------------------------------------------------
+// 2. KOT CONTROLLERS
+// -------------------------------------------------------------
+
+export const generateKOTHandler = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const restaurantId = getRestaurantId(req);
+    const orderId = getParamId(req);
+    const kot = await orderService.generateKOT(
+      restaurantId,
+      orderId,
+      req.body,
+      req.user!.id
+    );
+    res.status(201).json({
+      success: true,
+      message: "KOT generated and sent to kitchen successfully.",
+      data: kot,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to generate KOT";
+    res.status(400).json({ success: false, message });
+  }
+};
+
+export const getKOTsHandler = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const restaurantId = getRestaurantId(req);
+    const result = await orderService.getKOTs(restaurantId, req.query);
+    res.status(200).json({
+      success: true,
+      data: result.kots,
+      pagination: result.pagination,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getKOTByIdHandler = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const restaurantId = getRestaurantId(req);
+    const id = getParamId(req);
+    const kot = await orderService.getKOTById(restaurantId, id);
+    res.status(200).json({
+      success: true,
+      data: kot,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "KOT not found";
+    res.status(404).json({ success: false, message });
+  }
+};
+
+// -------------------------------------------------------------
+// 3. KITCHEN DISPLAY SYSTEM (KDS) & PRINTING
+// -------------------------------------------------------------
+
+export const getKitchenOrdersHandler = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const restaurantId = getRestaurantId(req);
+    const kitchenOrders = await orderService.getKitchenOrders(restaurantId);
+    res.status(200).json({
+      success: true,
+      data: kitchenOrders,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateKOTStatusHandler = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const restaurantId = getRestaurantId(req);
+    const id = getParamId(req);
+    const kot = await orderService.updateKOTStatus(
+      restaurantId,
+      id,
+      req.body.status,
+      req.user!.id
+    );
+    res.status(200).json({
+      success: true,
+      message: `KOT status updated to ${req.body.status}.`,
+      data: kot,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to update KOT status";
+    res.status(400).json({ success: false, message });
+  }
+};
+
+export const printKOTHandler = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const restaurantId = getRestaurantId(req);
+    const id = getParamId(req);
+    const format = (req.query.format as "58mm" | "80mm") || "80mm";
+    const printData = await orderService.formatKOTPrint(restaurantId, id, format);
+    res.status(200).json({
+      success: true,
+      data: printData,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to format KOT print output";
+    res.status(400).json({ success: false, message });
+  }
+};
+
