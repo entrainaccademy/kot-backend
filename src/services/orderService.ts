@@ -456,6 +456,20 @@ export const updateOrder = async (
 
   emitToRestaurant(restaurantId, "order:updated", { order: populated });
 
+  // If order transitioned to READY, emit dedicated food-ready broadcast
+  if (order.status === "READY") {
+    const tableNum = (populated?.tableId as any)?.tableNumber
+      ? `Table ${(populated?.tableId as any).tableNumber}`
+      : populated?.orderType || "Takeaway/Delivery";
+    emitToRestaurant(restaurantId, "kitchen:order-ready", {
+      orderId: order._id.toString(),
+      orderNumber: order.orderNumber,
+      tableNumber: tableNum,
+      status: "READY",
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   await logSecurityEvent({
     actorId,
     action: "ORDER_UPDATED",
@@ -539,6 +553,20 @@ export const addItemsToOrder = async (
     .populate("customerId", "name phone");
 
   emitToRestaurant(restaurantId, "order:updated", { order: populated });
+
+  // If order transitioned to READY, emit dedicated food-ready broadcast
+  if (order.status === "READY") {
+    const tableNum = (populated?.tableId as any)?.tableNumber
+      ? `Table ${(populated?.tableId as any).tableNumber}`
+      : populated?.orderType || "Takeaway/Delivery";
+    emitToRestaurant(restaurantId, "kitchen:order-ready", {
+      orderId: order._id.toString(),
+      orderNumber: order.orderNumber,
+      tableNumber: tableNum,
+      status: "READY",
+      timestamp: new Date().toISOString(),
+    });
+  }
 
   await logSecurityEvent({
     actorId,
@@ -840,7 +868,14 @@ export const generateKOT = async (
   await order.save();
 
   // Real-time broadcasts
-  emitToRestaurant(restaurantId, "kot:created", { kot });
+  emitToRestaurant(restaurantId, "kot:created", {
+    kot,
+    orderId: order._id.toString(),
+    orderNumber: order.orderNumber,
+    tableNumber,
+    items: kotItems,
+    timestamp: new Date().toISOString(),
+  });
   emitToRestaurant(restaurantId, "order:updated", { order });
 
   await logSecurityEvent({
