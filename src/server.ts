@@ -23,16 +23,21 @@ const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
 // Security & Parsing Middlewares
 app.use(helmet({ crossOriginResourcePolicy: false }));
 
-// Permissive local CORS handler for dev & local network
+// Permissive CORS handler supporting local dev, network LAN, Vercel deployments, and FRONTEND_URL
 const isAllowedOrigin = (origin?: string): boolean => {
   if (!origin) return true;
+  const normalizedOrigin = origin.replace(/\/$/, "");
+  const normalizedFrontend = FRONTEND_URL.replace(/\/$/, "");
+
   if (
-    origin.includes("localhost") ||
-    origin.includes("127.0.0.1") ||
-    origin.includes("192.168.") ||
-    origin.includes("10.") ||
-    origin.includes("172.") ||
-    origin === FRONTEND_URL
+    normalizedOrigin.includes("localhost") ||
+    normalizedOrigin.includes("127.0.0.1") ||
+    normalizedOrigin.includes("192.168.") ||
+    normalizedOrigin.includes("10.") ||
+    normalizedOrigin.includes("172.") ||
+    normalizedOrigin.includes("vercel.app") ||
+    normalizedOrigin.includes("onrender.com") ||
+    normalizedOrigin === normalizedFrontend
   ) {
     return true;
   }
