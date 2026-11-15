@@ -227,8 +227,8 @@ export const createInvoice = async (
   const roundOff = round2(grandTotal - preRoundTotal);
 
   // 10. Snapshots
-  let customerSnapshot;
-  if (order.customerId) {
+  let customerSnapshot: any = input.customerSnapshot;
+  if (!customerSnapshot && order.customerId) {
     const customer = await Customer.findById(order.customerId);
     if (customer) {
       customerSnapshot = {

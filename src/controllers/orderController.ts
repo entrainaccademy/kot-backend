@@ -405,8 +405,15 @@ export const confirmBillRequestHandler = async (
     const restaurantId = getRestaurantId(req);
     const id = getParamId(req);
     const staffId = req.user!.id;
+    const { discount, serviceCharge, deliveryCharge, customerName, customerPhone } = req.body || {};
 
-    const result = await orderService.confirmBillRequest(restaurantId, id, staffId);
+    const result = await orderService.confirmBillRequest(restaurantId, id, staffId, {
+      discount,
+      serviceCharge,
+      deliveryCharge,
+      customerName,
+      customerPhone,
+    });
 
     res.status(200).json({
       success: true,

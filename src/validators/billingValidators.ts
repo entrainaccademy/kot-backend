@@ -20,6 +20,15 @@ export const createInvoiceSchema = z.object({
     .optional(),
   taxType: z.enum(["INTRA_STATE", "INTER_STATE"]).optional(),
   idempotencyKey: z.string().trim().max(100).optional(),
+  customerSnapshot: z
+    .object({
+      name: z.string().trim().max(100),
+      phone: z.string().trim().max(20).optional(),
+      email: z.string().trim().email().optional(),
+      gstin: z.string().trim().max(20).optional(),
+      address: z.string().trim().max(300).optional(),
+    })
+    .optional(),
 });
 
 export const recordPaymentSchema = z

@@ -1264,10 +1264,23 @@ export const getBillRequests = async (
   };
 };
 
+export interface ConfirmBillRequestOptions {
+  discount?: {
+    type: "PERCENTAGE" | "FIXED";
+    value: number;
+    reason?: string;
+  };
+  serviceCharge?: number;
+  deliveryCharge?: number;
+  customerName?: string;
+  customerPhone?: string;
+}
+
 export const confirmBillRequest = async (
   restaurantId: string,
   orderId: string,
-  staffId: string
+  staffId: string,
+  options?: ConfirmBillRequestOptions
 ) => {
   if (!Types.ObjectId.isValid(orderId)) {
     throw new Error("Invalid order ID format.");
@@ -1319,10 +1332,22 @@ export const confirmBillRequest = async (
   // and emits invoice:created and order:billed.
   let invoice: any;
   try {
+    const customerSnapshot =
+      options?.customerName?.trim() || options?.customerPhone?.trim()
+        ? {
+            name: options.customerName?.trim() || "Guest",
+            phone: options.customerPhone?.trim() || undefined,
+          }
+        : undefined;
+
     invoice = await createInvoice(
       restaurantId,
       {
         orderId: lockedOrder._id.toString(),
+        discount: options?.discount,
+        serviceCharge: options?.serviceCharge,
+        deliveryCharge: options?.deliveryCharge,
+        customerSnapshot,
         idempotencyKey: `inv-billreq-${lockedOrder._id.toString()}`,
       },
       staffId
