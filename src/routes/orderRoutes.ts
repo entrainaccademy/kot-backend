@@ -17,6 +17,10 @@ import {
   getKitchenOrdersHandler,
   updateKOTStatusHandler,
   printKOTHandler,
+  requestBillHandler,
+  getBillRequestsHandler,
+  confirmBillRequestHandler,
+  cancelBillRequestHandler,
 } from "../controllers/orderController";
 import {
   createOrderSchema,
@@ -128,6 +132,38 @@ router.patch(
   requirePermission(PERMISSIONS.KOT_MANAGE),
   validateBody(updateKOTStatusSchema),
   updateKOTStatusHandler
+);
+
+// -------------------------------------------------------------
+// 4. BILL REQUEST AND CONFIRMATION WORKFLOW
+// -------------------------------------------------------------
+
+// Waiter / Staff requests bill for an order
+router.post(
+  "/orders/:id/bill-request",
+  requirePermission(PERMISSIONS.ORDERS_VIEW),
+  requestBillHandler
+);
+
+// Cashier / Admin / Manager queries all active or historical bill requests
+router.get(
+  "/bill-requests",
+  requirePermission(PERMISSIONS.ORDERS_VIEW),
+  getBillRequestsHandler
+);
+
+// Authorized billing staff confirms bill request and generates invoice
+router.post(
+  "/orders/:id/bill-request/confirm",
+  requirePermission(PERMISSIONS.BILLING_CREATE),
+  confirmBillRequestHandler
+);
+
+// Staff cancels a pending bill request
+router.post(
+  "/orders/:id/bill-request/cancel",
+  requirePermission(PERMISSIONS.ORDERS_VIEW),
+  cancelBillRequestHandler
 );
 
 export default router;

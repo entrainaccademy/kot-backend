@@ -25,6 +25,21 @@ export type OrderStatus =
   | "COMPLETED"
   | "CANCELLED";
 
+export type BillRequestStatus = "NOT_REQUESTED" | "REQUESTED" | "CONFIRMED" | "CANCELLED";
+
+export interface IBillRequest {
+  status: BillRequestStatus;
+  requestedBy?: Types.ObjectId;
+  requestedAt?: Date;
+  tableNumber?: string;
+  confirmedBy?: Types.ObjectId;
+  confirmedAt?: Date;
+  cancelledBy?: Types.ObjectId;
+  cancelledAt?: Date;
+  cancelReason?: string;
+  invoiceId?: Types.ObjectId;
+}
+
 export interface IOrder extends Document {
   restaurantId: Types.ObjectId;
   orderNumber: string;
@@ -33,6 +48,7 @@ export interface IOrder extends Document {
   orderType: OrderType;
   items: IOrderItem[];
   status: OrderStatus;
+  billRequest?: IBillRequest;
   subtotal: number;
   tax: number;
   discount: number;
@@ -96,6 +112,50 @@ const OrderItemSchema = new Schema<IOrderItem>(
   { _id: true }
 );
 
+const BillRequestSchema = new Schema<IBillRequest>(
+  {
+    status: {
+      type: String,
+      enum: ["NOT_REQUESTED", "REQUESTED", "CONFIRMED", "CANCELLED"],
+      default: "NOT_REQUESTED",
+    },
+    requestedBy: {
+      type: Schema.Types.ObjectId,
+      ref: "Staff",
+    },
+    requestedAt: {
+      type: Date,
+    },
+    tableNumber: {
+      type: String,
+      trim: true,
+    },
+    confirmedBy: {
+      type: Schema.Types.ObjectId,
+      ref: "Staff",
+    },
+    confirmedAt: {
+      type: Date,
+    },
+    cancelledBy: {
+      type: Schema.Types.ObjectId,
+      ref: "Staff",
+    },
+    cancelledAt: {
+      type: Date,
+    },
+    cancelReason: {
+      type: String,
+      trim: true,
+    },
+    invoiceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Invoice",
+    },
+  },
+  { _id: false }
+);
+
 const OrderSchema = new Schema<IOrder>(
   {
     restaurantId: {
@@ -145,6 +205,10 @@ const OrderSchema = new Schema<IOrder>(
       default: "CONFIRMED",
       index: true,
     },
+    billRequest: {
+      type: BillRequestSchema,
+      default: () => ({ status: "NOT_REQUESTED" }),
+    },
     subtotal: {
       type: Number,
       required: true,
@@ -191,6 +255,7 @@ const OrderSchema = new Schema<IOrder>(
 // Compound unique index: order number unique within restaurant
 OrderSchema.index({ restaurantId: 1, orderNumber: 1 }, { unique: true });
 OrderSchema.index({ restaurantId: 1, status: 1 });
+OrderSchema.index({ restaurantId: 1, "billRequest.status": 1 });
 OrderSchema.index({ restaurantId: 1, tableId: 1 });
 OrderSchema.index({ restaurantId: 1, createdAt: -1 });
 

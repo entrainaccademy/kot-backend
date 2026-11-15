@@ -5,6 +5,7 @@ import { MenuItem } from "../models/MenuItem";
 import { RestaurantTable } from "../models/RestaurantTable";
 import { Restaurant } from "../models/Restaurant";
 import { Invoice } from "../models/Invoice";
+import { createInvoice } from "./billingService";
 import { emitToRestaurant } from "./socketService";
 import { logSecurityEvent } from "./auditService";
 
@@ -1114,4 +1115,338 @@ export const formatKOTPrint = async (
     createdAt: kot.createdAt,
     itemCount: kot.items.length,
   };
+};
+
+// -------------------------------------------------------------
+// 5. BILL REQUEST & CONFIRMATION WORKFLOW
+// -------------------------------------------------------------
+
+export const requestBill = async (
+  restaurantId: string,
+  orderId: string,
+  staffId: string,
+  staffRole: string
+) => {
+  if (!Types.ObjectId.isValid(orderId)) {
+    throw new Error("Invalid order ID format.");
+  }
+
+  const restObjectId = new Types.ObjectId(restaurantId);
+  const order = await Order.findOne({ _id: new Types.ObjectId(orderId), restaurantId: restObjectId })
+    .populate("tableId", "tableNumber floor status")
+    .populate("customerId", "name phone");
+
+  if (!order) {
+    throw new Error("Order not found or does not belong to your restaurant.");
+  }
+
+  if (["COMPLETED", "CANCELLED", "BILLED"].includes(order.status)) {
+    throw new Error(`Cannot request a bill for an order with status '${order.status}'.`);
+  }
+
+  // Prevent duplicate requests
+  if (order.billRequest && order.billRequest.status === "REQUESTED") {
+    throw new Error("Bill request already submitted for this order and is pending confirmation.");
+  }
+
+  const tableNumber = (order.tableId as any)?.tableNumber || "Takeaway/Delivery";
+
+  order.billRequest = {
+    status: "REQUESTED",
+    requestedBy: new Types.ObjectId(staffId),
+    requestedAt: new Date(),
+    tableNumber,
+  };
+
+  await order.save();
+
+  // Populate requestedBy for immediate display
+  const populated = await Order.findById(order._id)
+    .populate("tableId", "tableNumber floor status")
+    .populate("customerId", "name phone")
+    .populate("billRequest.requestedBy", "name role email")
+    .populate("createdBy", "name role");
+
+  // Real-time notification to Main POS & other connected clients
+  emitToRestaurant(restaurantId, "bill:requested", {
+    orderId: order._id.toString(),
+    orderNumber: order.orderNumber,
+    tableNumber,
+    grandTotal: order.grandTotal,
+    billRequest: populated?.billRequest,
+  });
+
+  emitToRestaurant(restaurantId, "order:updated", { order: populated });
+
+  await logSecurityEvent({
+    actorId: staffId,
+    action: "BILL_REQUESTED",
+    entityType: "Order",
+    entityId: order._id.toString(),
+    restaurantId,
+    metadata: {
+      orderNumber: order.orderNumber,
+      tableNumber,
+      grandTotal: order.grandTotal,
+      requestedByRole: staffRole,
+    },
+  });
+
+  return populated;
+};
+
+export const getBillRequests = async (
+  restaurantId: string,
+  query: {
+    status?: string;
+    date?: string;
+    tableNumber?: string;
+    page?: number;
+    limit?: number;
+  }
+) => {
+  const restObjectId = new Types.ObjectId(restaurantId);
+  const filter: any = {
+    restaurantId: restObjectId,
+  };
+
+  // Filter by billRequest status
+  if (query.status && query.status !== "ALL") {
+    filter["billRequest.status"] = query.status;
+  } else {
+    // By default, fetch orders that have had a bill request (REQUESTED or CONFIRMED)
+    filter["billRequest.status"] = { $in: ["REQUESTED", "CONFIRMED"] };
+  }
+
+  // Optional date filter (YYYY-MM-DD)
+  if (query.date) {
+    const startOfDay = new Date(`${query.date}T00:00:00.000Z`);
+    const endOfDay = new Date(`${query.date}T23:59:59.999Z`);
+    filter["billRequest.requestedAt"] = { $gte: startOfDay, $lte: endOfDay };
+  }
+
+  // Optional tableNumber filter
+  if (query.tableNumber) {
+    filter["billRequest.tableNumber"] = { $regex: query.tableNumber.trim(), $options: "i" };
+  }
+
+  const page = Math.max(1, query.page || 1);
+  const limit = Math.min(100, Math.max(1, query.limit || 50));
+  const skip = (page - 1) * limit;
+
+  const [orders, total] = await Promise.all([
+    Order.find(filter)
+      .sort({ "billRequest.requestedAt": -1, createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .populate("tableId", "tableNumber floor status")
+      .populate("customerId", "name phone")
+      .populate("billRequest.requestedBy", "name role email")
+      .populate("billRequest.confirmedBy", "name role email")
+      .populate("billRequest.invoiceId", "invoiceNumber paymentStatus paidAmount balanceAmount grandTotal")
+      .populate("createdBy", "name role"),
+    Order.countDocuments(filter),
+  ]);
+
+  // Also calculate pending count for live badges
+  const pendingCount = await Order.countDocuments({
+    restaurantId: restObjectId,
+    "billRequest.status": "REQUESTED",
+  });
+
+  return {
+    orders,
+    total,
+    page,
+    limit,
+    totalPages: Math.ceil(total / limit),
+    pendingCount,
+  };
+};
+
+export const confirmBillRequest = async (
+  restaurantId: string,
+  orderId: string,
+  staffId: string
+) => {
+  if (!Types.ObjectId.isValid(orderId)) {
+    throw new Error("Invalid order ID format.");
+  }
+
+  const restObjectId = new Types.ObjectId(restaurantId);
+
+  // 1. ATOMIC LOCKING & DUPLICATE PROTECTION:
+  // Atomically claim the bill request in a single atomic database operation.
+  // This guarantees that even if two cashiers click "Confirm" at the exact same millisecond,
+  // only one can successfully lock the order.
+  const lockedOrder = await Order.findOneAndUpdate(
+    {
+      _id: new Types.ObjectId(orderId),
+      restaurantId: restObjectId,
+      "billRequest.status": "REQUESTED",
+      status: { $nin: ["BILLED", "COMPLETED", "CANCELLED"] },
+    },
+    {
+      $set: {
+        "billRequest.status": "CONFIRMED",
+        "billRequest.confirmedBy": new Types.ObjectId(staffId),
+        "billRequest.confirmedAt": new Date(),
+      },
+    },
+    { new: true }
+  );
+
+  if (!lockedOrder) {
+    // Order was either already confirmed, does not exist, or was in an invalid status
+    const currentOrder = await Order.findOne({ _id: new Types.ObjectId(orderId), restaurantId: restObjectId });
+    if (!currentOrder) {
+      throw new Error("Order not found or does not belong to your restaurant.");
+    }
+    if (currentOrder.billRequest?.status === "CONFIRMED" || currentOrder.status === "BILLED") {
+      throw new Error("This bill request has already been confirmed and an invoice generated.");
+    }
+    if (currentOrder.status === "COMPLETED") {
+      throw new Error("This order is already completed and paid.");
+    }
+    if (currentOrder.status === "CANCELLED") {
+      throw new Error("Cannot confirm a bill for a cancelled order.");
+    }
+    throw new Error("No pending bill request found for this order.");
+  }
+
+  // 2. Generate Invoice using the EXISTING production billingService
+  // Note: createInvoice validates items, assigns INV-YYYYMMDD-XXXX, updates order.status to BILLED,
+  // and emits invoice:created and order:billed.
+  let invoice: any;
+  try {
+    invoice = await createInvoice(
+      restaurantId,
+      {
+        orderId: lockedOrder._id.toString(),
+        idempotencyKey: `inv-billreq-${lockedOrder._id.toString()}`,
+      },
+      staffId
+    );
+  } catch (err: any) {
+    // If invoice generation fails, rollback billRequest status so it can be retried
+    await Order.findByIdAndUpdate(lockedOrder._id, {
+      $set: {
+        "billRequest.status": "REQUESTED",
+        "billRequest.confirmedBy": null,
+        "billRequest.confirmedAt": null,
+      },
+    });
+    throw err;
+  }
+
+  // Link invoiceId to billRequest
+  lockedOrder.billRequest!.invoiceId = invoice._id as Types.ObjectId;
+  await lockedOrder.save();
+
+  const fullyPopulated = await Order.findById(lockedOrder._id)
+    .populate("tableId", "tableNumber floor status")
+    .populate("customerId", "name phone")
+    .populate("billRequest.requestedBy", "name role email")
+    .populate("billRequest.confirmedBy", "name role email")
+    .populate("billRequest.invoiceId", "invoiceNumber paymentStatus grandTotal paidAmount balanceAmount")
+    .populate("createdBy", "name role");
+
+  // Real-time notification to Staff Mobile PWA & Main POS
+  emitToRestaurant(restaurantId, "bill:confirmed", {
+    orderId: lockedOrder._id.toString(),
+    orderNumber: lockedOrder.orderNumber,
+    tableNumber: lockedOrder.billRequest?.tableNumber,
+    invoiceId: invoice._id.toString(),
+    invoiceNumber: invoice.invoiceNumber,
+    billRequest: fullyPopulated?.billRequest,
+    invoice,
+  });
+
+  await logSecurityEvent({
+    actorId: staffId,
+    action: "BILL_CONFIRMED",
+    entityType: "Order",
+    entityId: lockedOrder._id.toString(),
+    restaurantId,
+    metadata: {
+      orderNumber: lockedOrder.orderNumber,
+      invoiceNumber: invoice.invoiceNumber,
+      grandTotal: invoice.grandTotal,
+    },
+  });
+
+  return {
+    order: fullyPopulated,
+    invoice,
+  };
+};
+
+export const cancelBillRequest = async (
+  restaurantId: string,
+  orderId: string,
+  staffId: string,
+  staffRole: string,
+  reason?: string
+) => {
+  if (!Types.ObjectId.isValid(orderId)) {
+    throw new Error("Invalid order ID format.");
+  }
+
+  const restObjectId = new Types.ObjectId(restaurantId);
+  const order = await Order.findOne({ _id: new Types.ObjectId(orderId), restaurantId: restObjectId });
+
+  if (!order) {
+    throw new Error("Order not found or does not belong to your restaurant.");
+  }
+
+  if (!order.billRequest || order.billRequest.status !== "REQUESTED") {
+    throw new Error("No pending bill request exists to cancel for this order.");
+  }
+
+  // Security enforcement: Waiters can ONLY cancel their own pending bill request
+  if (staffRole === "WAITER") {
+    const requestedById = order.billRequest.requestedBy?.toString();
+    if (requestedById && requestedById !== staffId) {
+      throw new Error("Forbidden: You can only cancel your own pending bill requests.");
+    }
+  }
+
+  order.billRequest.status = "CANCELLED";
+  order.billRequest.cancelledBy = new Types.ObjectId(staffId);
+  order.billRequest.cancelledAt = new Date();
+  order.billRequest.cancelReason = reason || "Cancelled by staff";
+
+  await order.save();
+
+  const populated = await Order.findById(order._id)
+    .populate("tableId", "tableNumber floor status")
+    .populate("customerId", "name phone")
+    .populate("billRequest.requestedBy", "name role email")
+    .populate("billRequest.cancelledBy", "name role email")
+    .populate("createdBy", "name role");
+
+  // Real-time broadcast
+  emitToRestaurant(restaurantId, "bill:cancelled", {
+    orderId: order._id.toString(),
+    orderNumber: order.orderNumber,
+    tableNumber: order.billRequest.tableNumber,
+    billRequest: populated?.billRequest,
+  });
+
+  emitToRestaurant(restaurantId, "order:updated", { order: populated });
+
+  await logSecurityEvent({
+    actorId: staffId,
+    action: "BILL_REQUEST_CANCELLED",
+    entityType: "Order",
+    entityId: order._id.toString(),
+    restaurantId,
+    metadata: {
+      orderNumber: order.orderNumber,
+      cancelledByRole: staffRole,
+      reason,
+    },
+  });
+
+  return populated;
 };
