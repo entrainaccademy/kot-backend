@@ -21,6 +21,8 @@ import {
   getBillRequestsHandler,
   confirmBillRequestHandler,
   cancelBillRequestHandler,
+  createBillingHandoffHandler,
+  verifyBillingHandoffHandler,
 } from "../controllers/orderController";
 import {
   createOrderSchema,
@@ -164,6 +166,24 @@ router.post(
   "/orders/:id/bill-request/cancel",
   requirePermission(PERMISSIONS.ORDERS_VIEW),
   cancelBillRequestHandler
+);
+
+// -------------------------------------------------------------
+// 5. SECURE BILLING HANDOFF WORKFLOW (Cross-App Integration)
+// -------------------------------------------------------------
+
+// Waiter App creates a cryptographically signed billing handoff token
+router.post(
+  "/orders/:id/billing-handoff",
+  requirePermission(PERMISSIONS.ORDERS_VIEW),
+  createBillingHandoffHandler
+);
+
+// POS verifies the billing handoff token
+router.post(
+  "/orders/:id/verify-handoff",
+  requirePermission(PERMISSIONS.ORDERS_VIEW),
+  verifyBillingHandoffHandler
 );
 
 export default router;

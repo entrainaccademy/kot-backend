@@ -57,6 +57,26 @@ export const verifyRefreshToken = (token: string): RefreshTokenPayload => {
   return jwt.verify(token, getRefreshSecret()) as RefreshTokenPayload;
 };
 
+export interface BillingHandoffPayload {
+  orderId: string;
+  orderNumber: string;
+  restaurantId: string;
+  requestedBy: string;
+  purpose: "BILLING_HANDOFF";
+}
+
+export const generateBillingHandoffToken = (payload: BillingHandoffPayload): string => {
+  return jwt.sign(payload, getAccessSecret(), { expiresIn: "15m" });
+};
+
+export const verifyBillingHandoffToken = (token: string): BillingHandoffPayload => {
+  const decoded = jwt.verify(token, getAccessSecret()) as BillingHandoffPayload;
+  if (decoded.purpose !== "BILLING_HANDOFF") {
+    throw new Error("Invalid billing handoff token purpose.");
+  }
+  return decoded;
+};
+
 export const hashToken = (token: string): string => {
   return crypto.createHash("sha256").update(token).digest("hex");
 };

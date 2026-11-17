@@ -8,6 +8,7 @@ import { Invoice } from "../models/Invoice";
 import { createInvoice } from "./billingService";
 import { emitToRestaurant } from "./socketService";
 import { logSecurityEvent } from "./auditService";
+import { generateBillingHandoffToken, verifyBillingHandoffToken } from "../utils/jwt";
 
 // -------------------------------------------------------------
 // HELPER FUNCTIONS
@@ -305,17 +306,23 @@ export const getOrders = async (
 };
 
 export const getOrderById = async (restaurantId: string, orderId: string) => {
-  if (!Types.ObjectId.isValid(orderId)) {
-    throw new Error("Invalid order ID format.");
+  const isObjectId = Types.ObjectId.isValid(orderId);
+  const query: any = { restaurantId: new Types.ObjectId(restaurantId) };
+
+  if (isObjectId) {
+    query._id = new Types.ObjectId(orderId);
+  } else if (orderId && typeof orderId === "string" && orderId.trim().length > 0) {
+    query.orderNumber = orderId.trim();
+  } else {
+    throw new Error("Invalid order reference format.");
   }
 
-  const order = await Order.findOne({
-    _id: orderId,
-    restaurantId,
-  })
+  const order = await Order.findOne(query)
     .populate("tableId", "tableNumber floor status")
     .populate("customerId", "name phone email")
-    .populate("createdBy", "name role");
+    .populate("createdBy", "name role")
+    .populate("billRequest.requestedBy", "name role")
+    .populate("billRequest.invoiceId", "invoiceNumber paymentStatus paidAmount balanceAmount grandTotal");
 
   if (!order) {
     throw new Error("Order not found.");
@@ -1474,4 +1481,96 @@ export const cancelBillRequest = async (
   });
 
   return populated;
+};
+
+// -------------------------------------------------------------
+// SECURE BILLING HANDOFF WORKFLOW (Cross-App Integration)
+// -------------------------------------------------------------
+
+/**
+ * Creates a cryptographically signed, short-lived handoff token for the Waiter Web App.
+ * Never grants billing authority on its own; POS user must still authenticate.
+ */
+export const createBillingHandoff = async (
+  restaurantId: string,
+  orderId: string,
+  userId: string
+) => {
+  if (!Types.ObjectId.isValid(orderId)) {
+    throw new Error("Invalid order ID format.");
+  }
+
+  const order = await Order.findOne({
+    _id: new Types.ObjectId(orderId),
+    restaurantId: new Types.ObjectId(restaurantId),
+  });
+
+  if (!order) {
+    throw new Error("Order not found or does not belong to your restaurant.");
+  }
+
+  if (order.status === "CANCELLED") {
+    throw new Error("Cannot initiate billing handoff for a cancelled order.");
+  }
+
+  const handoffToken = generateBillingHandoffToken({
+    orderId: order._id.toString(),
+    orderNumber: order.orderNumber,
+    restaurantId: restaurantId,
+    requestedBy: userId,
+    purpose: "BILLING_HANDOFF",
+  });
+
+  const posBaseUrl = process.env.POS_APP_URL || "https://kot-frontend-zeta.vercel.app/restaurant/pos";
+  const handoffUrl = `${posBaseUrl}?orderId=${encodeURIComponent(order._id.toString())}&handoffToken=${encodeURIComponent(handoffToken)}`;
+
+  await logSecurityEvent({
+    actorId: userId,
+    action: "BILLING_HANDOFF_CREATED",
+    entityType: "Order",
+    entityId: order._id.toString(),
+    restaurantId,
+    metadata: {
+      orderNumber: order.orderNumber,
+    },
+  });
+
+  return {
+    orderId: order._id.toString(),
+    orderNumber: order.orderNumber,
+    handoffToken,
+    handoffUrl,
+    expiresInSeconds: 900,
+  };
+};
+
+/**
+ * Verifies a billing handoff token and returns the populated order.
+ * Strictly verifies restaurant tenancy and token authenticity.
+ */
+export const verifyBillingHandoff = async (
+  restaurantId: string,
+  orderId: string,
+  token: string
+) => {
+  if (!Types.ObjectId.isValid(orderId)) {
+    throw new Error("Invalid order ID format.");
+  }
+
+  if (!token) {
+    throw new Error("Missing billing handoff token.");
+  }
+
+  const payload = verifyBillingHandoffToken(token);
+
+  if (payload.orderId !== orderId) {
+    throw new Error("Handoff token does not match the requested order ID.");
+  }
+
+  if (payload.restaurantId !== restaurantId) {
+    throw new Error("Handoff token was issued for a different restaurant.");
+  }
+
+  const result = await getOrderById(restaurantId, orderId);
+  return result.order;
 };

@@ -459,3 +459,59 @@ export const cancelBillRequestHandler = async (
   }
 };
 
+export const createBillingHandoffHandler = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const restaurantId = getRestaurantId(req);
+    const orderId = getParamId(req);
+    const userId = req.user!.id;
+
+    const result = await orderService.createBillingHandoff(
+      restaurantId,
+      orderId,
+      userId
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Billing handoff token generated successfully.",
+      data: result,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to create billing handoff";
+    const status = message.includes("not found") ? 404 : 400;
+    res.status(status).json({ success: false, message });
+  }
+};
+
+export const verifyBillingHandoffHandler = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const restaurantId = getRestaurantId(req);
+    const orderId = getParamId(req);
+    const token = req.body?.token || (req.query?.token as string);
+
+    const order = await orderService.verifyBillingHandoff(
+      restaurantId,
+      orderId,
+      token
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Billing handoff verified successfully.",
+      data: order,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Billing handoff verification failed";
+    const status = message.includes("not found") ? 404 : 403;
+    res.status(status).json({ success: false, message });
+  }
+};
+
