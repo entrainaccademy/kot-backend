@@ -1574,3 +1574,138 @@ export const verifyBillingHandoff = async (
   const result = await getOrderById(restaurantId, orderId);
   return result.order;
 };
+
+/**
+ * Merge bills from two or more tables into a single unified bill.
+ * Preserves all ordered items from each table and recalculates correct subtotal, tax, and grandTotal.
+ */
+export const mergeBills = async (
+  restaurantId: string,
+  orderIds: string[],
+  primaryOrderId?: string,
+  staffId?: string
+) => {
+  if (!Array.isArray(orderIds) || orderIds.length < 2) {
+    throw new Error("At least two orders are required to merge.");
+  }
+
+  const restObjectId = new Types.ObjectId(restaurantId);
+  const objectIds = orderIds.map((id) => new Types.ObjectId(id));
+
+  const orders = await Order.find({
+    _id: { $in: objectIds },
+    restaurantId: restObjectId,
+  }).populate("tableId", "tableNumber floor status");
+
+  if (orders.length !== orderIds.length) {
+    throw new Error("One or more orders could not be found.");
+  }
+
+  // Ensure none are already billed or completed
+  for (const o of orders) {
+    if (["BILLED", "COMPLETED", "CANCELLED"].includes(o.status)) {
+      throw new Error(`Order ${o.orderNumber} is already '${o.status}' and cannot be merged.`);
+    }
+  }
+
+  // Determine primary and secondary orders
+  const primaryOrder = (primaryOrderId && orders.find((o) => o._id.toString() === primaryOrderId)) || orders[0];
+  const secondaryOrders = orders.filter((o) => o._id.toString() !== primaryOrder._id.toString());
+
+  // Collect all table names
+  const allTableNumbers: string[] = [];
+  orders.forEach((o) => {
+    const tableNum = (o.tableId as any)?.tableNumber || o.billRequest?.tableNumber;
+    if (tableNum && !allTableNumbers.includes(tableNum)) {
+      allTableNumbers.push(tableNum);
+    }
+  });
+
+  const combinedTables = allTableNumbers.length > 0 ? allTableNumbers.join(" + ") : primaryOrder.orderType;
+
+  // Consolidate items into primaryOrder
+  for (const secOrder of secondaryOrders) {
+    for (const item of secOrder.items) {
+      if (item.status === "ACTIVE") {
+        const existing = primaryOrder.items.find(
+          (pi) =>
+            pi.status === "ACTIVE" &&
+            pi.menuItemId.toString() === item.menuItemId.toString() &&
+            pi.price === item.price &&
+            (pi.notes || "") === (item.notes || "")
+        );
+
+        if (existing) {
+          existing.quantity += item.quantity;
+          existing.submittedQuantity += item.submittedQuantity;
+          existing.itemTotal = Math.round(existing.price * existing.quantity * 100) / 100;
+        } else {
+          primaryOrder.items.push({
+            menuItemId: item.menuItemId,
+            name: item.name,
+            price: item.price,
+            quantity: item.quantity,
+            submittedQuantity: item.submittedQuantity,
+            taxRate: item.taxRate || 5,
+            notes: item.notes,
+            itemTotal: item.itemTotal,
+            status: "ACTIVE",
+          });
+        }
+      }
+    }
+
+    // Cancel secondary order
+    secOrder.status = "CANCELLED";
+    if (secOrder.billRequest) {
+      secOrder.billRequest.status = "CANCELLED";
+      secOrder.billRequest.cancelReason = `Merged into ${primaryOrder.orderNumber}`;
+    }
+
+    // Release secondary table status to AVAILABLE
+    if (secOrder.tableId) {
+      await RestaurantTable.findByIdAndUpdate(secOrder.tableId, { status: "AVAILABLE" });
+    }
+
+    await secOrder.save();
+  }
+
+  // Recalculate primary totals
+  const { subtotal, tax, discount, grandTotal } = calculateOrderTotals(
+    primaryOrder.items,
+    primaryOrder.discount
+  );
+  primaryOrder.subtotal = subtotal;
+  primaryOrder.tax = tax;
+  primaryOrder.discount = discount;
+  primaryOrder.grandTotal = grandTotal;
+
+  if (primaryOrder.billRequest) {
+    primaryOrder.billRequest.tableNumber = combinedTables;
+    primaryOrder.billRequest.status = "REQUESTED";
+    if (staffId && !primaryOrder.billRequest.requestedBy) {
+      primaryOrder.billRequest.requestedBy = new Types.ObjectId(staffId);
+    }
+  }
+
+  await primaryOrder.save();
+
+  const fullyPopulated = await Order.findById(primaryOrder._id)
+    .populate("tableId", "tableNumber floor status")
+    .populate("customerId", "name phone")
+    .populate("billRequest.requestedBy", "name role email")
+    .populate("createdBy", "name role");
+
+  // Real-time broadcasts
+  emitToRestaurant(restaurantId, "bill:requested", fullyPopulated);
+  for (const sec of secondaryOrders) {
+    emitToRestaurant(restaurantId, "bill:cancelled", {
+      orderId: sec._id.toString(),
+      orderNumber: sec.orderNumber,
+      reason: `Merged into ${primaryOrder.orderNumber}`,
+    });
+  }
+
+  return fullyPopulated;
+};
+

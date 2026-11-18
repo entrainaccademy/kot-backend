@@ -68,3 +68,9 @@ export const updateKOTStatusSchema = z.object({
   ]),
 });
 
+export const mergeBillsSchema = z.object({
+  primaryOrderId: objectIdSchema.optional(),
+  orderIds: z.array(objectIdSchema).min(2, "At least two orders are required to merge"),
+});
+
+

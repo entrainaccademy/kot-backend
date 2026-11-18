@@ -515,3 +515,40 @@ export const verifyBillingHandoffHandler = async (
   }
 };
 
+export const mergeBillsHandler = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const restaurantId = getRestaurantId(req);
+    const staffId = req.user!.id;
+    const { primaryOrderId, orderIds } = req.body || {};
+
+    if (!Array.isArray(orderIds) || orderIds.length < 2) {
+      res.status(400).json({
+        success: false,
+        message: "At least two orders/tables are required to merge bills.",
+      });
+      return;
+    }
+
+    const mergedOrder = await orderService.mergeBills(
+      restaurantId,
+      orderIds,
+      primaryOrderId,
+      staffId
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Bills merged successfully.",
+      data: mergedOrder,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to merge bills";
+    res.status(400).json({ success: false, message });
+  }
+};
+
+

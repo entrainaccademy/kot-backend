@@ -23,6 +23,7 @@ import {
   cancelBillRequestHandler,
   createBillingHandoffHandler,
   verifyBillingHandoffHandler,
+  mergeBillsHandler,
 } from "../controllers/orderController";
 import {
   createOrderSchema,
@@ -32,6 +33,7 @@ import {
   cancelOrderSchema,
   generateKOTSchema,
   updateKOTStatusSchema,
+  mergeBillsSchema,
 } from "../validators/orderValidators";
 
 const router = Router();
@@ -166,6 +168,14 @@ router.post(
   "/orders/:id/bill-request/cancel",
   requirePermission(PERMISSIONS.ORDERS_VIEW),
   cancelBillRequestHandler
+);
+
+// Authorized billing staff merges bills from two or more tables into a single bill
+router.post(
+  "/orders/merge-bills",
+  requirePermission(PERMISSIONS.BILLING_CREATE),
+  validateBody(mergeBillsSchema),
+  mergeBillsHandler
 );
 
 // -------------------------------------------------------------
