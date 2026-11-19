@@ -494,25 +494,44 @@ export const addItemsToOrder = async (
   restaurantId: string,
   orderId: string,
   newItemsData: Array<{ menuItemId: string; quantity: number; notes?: string }>,
-  actorId: string
+  actorId: string,
+  idempotencyKey?: string
 ) => {
   if (!Types.ObjectId.isValid(orderId)) {
     throw new Error("Invalid order ID format.");
   }
 
-  const order = await Order.findOne({ _id: orderId, restaurantId });
+  const restObjectId = new Types.ObjectId(restaurantId);
+
+  // Idempotency check: prevent duplicate item & KOT creation on double-click or network retry
+  if (idempotencyKey) {
+    const existingKOT = await KOT.findOne({
+      restaurantId: restObjectId,
+      idempotencyKey: `kot-${idempotencyKey.trim()}`,
+    });
+    if (existingKOT) {
+      const existingOrder = await Order.findById(orderId)
+        .populate("tableId", "tableNumber floor status")
+        .populate("customerId", "name phone");
+      if (existingOrder) {
+        return existingOrder;
+      }
+    }
+  }
+
+  const order = await Order.findOne({ _id: orderId, restaurantId: restObjectId });
   if (!order) {
     throw new Error("Order not found.");
   }
 
   if (["COMPLETED", "BILLED", "CANCELLED"].includes(order.status)) {
-    throw new Error(`Cannot add items to order in '${order.status}' status.`);
+    throw new Error(`Cannot add items to order in '${order.status}' status. Billing has already been finalized.`);
   }
 
   const itemIds = newItemsData.map((i) => new Types.ObjectId(i.menuItemId));
   const menuItems = await MenuItem.find({
     _id: { $in: itemIds },
-    restaurantId,
+    restaurantId: restObjectId,
   });
 
   const menuItemMap = new Map<string, any>();
@@ -537,7 +556,7 @@ export const addItemsToOrder = async (
       name: menuItem.name,
       price,
       quantity,
-      submittedQuantity: 0,
+      submittedQuantity: 0, // Unsubmitted: generateKOT will pick this up exclusively!
       taxRate,
       notes: itemInput.notes,
       itemTotal,
@@ -556,11 +575,38 @@ export const addItemsToOrder = async (
 
   await order.save();
 
+  // Generate a new KOT for only the newly added unsubmitted items
+  try {
+    await generateKOT(
+      restaurantId,
+      order._id.toString(),
+      {
+        priority: "MEDIUM",
+        idempotencyKey: idempotencyKey ? `kot-${idempotencyKey.trim()}` : undefined,
+      },
+      actorId
+    );
+  } catch (kotErr: any) {
+    console.warn("KOT generation during addItemsToOrder note:", kotErr.message);
+  }
+
   const populated = await Order.findById(order._id)
     .populate("tableId", "tableNumber floor status")
     .populate("customerId", "name phone");
 
   emitToRestaurant(restaurantId, "order:updated", { order: populated });
+
+  // If order has an active bill request, notify POS with updated totals
+  if (populated?.billRequest?.status === "REQUESTED") {
+    emitToRestaurant(restaurantId, "bill:requested", {
+      orderId: populated._id.toString(),
+      orderNumber: populated.orderNumber,
+      tableNumber: (populated.tableId as any)?.tableNumber || populated.billRequest?.tableNumber,
+      grandTotal: populated.grandTotal,
+      billRequest: populated.billRequest,
+      order: populated,
+    });
+  }
 
   // If order transitioned to READY, emit dedicated food-ready broadcast
   if (order.status === "READY") {
@@ -1323,6 +1369,24 @@ export const confirmBillRequest = async (
       throw new Error("Order not found or does not belong to your restaurant.");
     }
     if (currentOrder.billRequest?.status === "CONFIRMED" || currentOrder.status === "BILLED") {
+      const existingInvoice = await Invoice.findOne({
+        restaurantId: restObjectId,
+        orderId: currentOrder._id,
+        status: { $ne: "VOID" },
+      });
+      if (existingInvoice) {
+        const fullyPopulated = await Order.findById(currentOrder._id)
+          .populate("tableId", "tableNumber floor status")
+          .populate("customerId", "name phone")
+          .populate("billRequest.requestedBy", "name role email")
+          .populate("billRequest.confirmedBy", "name role email")
+          .populate("billRequest.invoiceId", "invoiceNumber paymentStatus grandTotal paidAmount balanceAmount")
+          .populate("createdBy", "name role");
+        return {
+          order: fullyPopulated || currentOrder,
+          invoice: existingInvoice,
+        };
+      }
       throw new Error("This bill request has already been confirmed and an invoice generated.");
     }
     if (currentOrder.status === "COMPLETED") {

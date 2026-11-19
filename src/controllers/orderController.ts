@@ -112,7 +112,8 @@ export const addItemsToOrderHandler = async (
       restaurantId,
       id,
       req.body.items,
-      req.user!.id
+      req.user!.id,
+      req.body.idempotencyKey
     );
     res.status(200).json({
       success: true,

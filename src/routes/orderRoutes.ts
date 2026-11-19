@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requirePermission } from "../middleware/auth";
+import { requirePermission, requireAnyPermission } from "../middleware/auth";
 import { validateBody } from "../middleware/validate";
 import { PERMISSIONS } from "../utils/permissions";
 import {
@@ -69,7 +69,7 @@ router.patch(
 
 router.post(
   "/orders/:id/items",
-  requirePermission(PERMISSIONS.ORDERS_MANAGE),
+  requireAnyPermission(PERMISSIONS.ORDERS_MANAGE, PERMISSIONS.ORDERS_CREATE),
   validateBody(addOrderItemsSchema),
   addItemsToOrderHandler
 );

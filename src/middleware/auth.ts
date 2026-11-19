@@ -152,6 +152,46 @@ export const requirePermission = (...requiredPermissions: Permission[]) => {
 };
 
 /**
+ * Enforces that user possesses at least one of the specified permissions.
+ * SuperAdmin and Restaurant Admin bypass with full permissions.
+ */
+export const requireAnyPermission = (...requiredPermissions: Permission[]) => {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (!req.user) {
+      res.status(401).json({
+        success: false,
+        message: "Authentication required.",
+      });
+      return;
+    }
+
+    // Platform Super Admin and Restaurant Admin have unrestricted access within their domain
+    if (req.user.role === "SUPER_ADMIN" || req.user.role === "ADMIN") {
+      next();
+      return;
+    }
+
+    // Combine explicit permissions with role default permissions
+    const effectivePermissions = new Set<string>([
+      ...(DEFAULT_ROLE_PERMISSIONS[req.user.role] || []),
+      ...(req.user.permissions || []),
+    ]);
+
+    const hasAny = requiredPermissions.some((p) => effectivePermissions.has(p));
+    if (!hasAny) {
+      res.status(403).json({
+        success: false,
+        message: "Forbidden: You do not possess any of the required permissions.",
+        required: requiredPermissions,
+      });
+      return;
+    }
+
+    next();
+  };
+};
+
+/**
  * Enforces restaurant tenant access and validates active restaurant status.
  */
 export const requireRestaurantAccess = async (

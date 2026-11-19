@@ -73,7 +73,7 @@ export const createInvoice = async (
     throw new Error("Cannot issue invoice for a cancelled order");
   }
 
-  // 3. Prevent duplicate active invoices for the same order
+  // 3. Prevent duplicate active invoices for the same order (idempotent retry safety)
   const existingActiveInvoice = await Invoice.findOne({
     restaurantId: restObjectId,
     orderId: order._id,
@@ -81,9 +81,7 @@ export const createInvoice = async (
   });
 
   if (existingActiveInvoice) {
-    throw new Error(
-      `An active invoice (${existingActiveInvoice.invoiceNumber}) has already been issued for this order`
-    );
+    return existingActiveInvoice;
   }
 
   // 4. Retrieve Restaurant profile for tax and contact snapshot
@@ -303,6 +301,38 @@ export const createInvoice = async (
   // 12. Update Order Status to BILLED
   order.status = "BILLED";
   await order.save();
+
+  // 12.1 Atomic Table Release for Dine-In Orders upon Final Bill Generation
+  // Release the table assignment as soon as the final bill is saved,
+  // provided the billed order still owns the assignment and no other active order requires it.
+  if (order.tableId) {
+    const remainingActiveOrders = await Order.countDocuments({
+      restaurantId: restObjectId,
+      tableId: order.tableId,
+      _id: { $ne: order._id },
+      status: { $nin: ["BILLED", "COMPLETED", "CANCELLED"] },
+    });
+
+    if (remainingActiveOrders === 0) {
+      const table = await RestaurantTable.findOneAndUpdate(
+        { _id: order.tableId, restaurantId: restObjectId },
+        { $set: { status: "AVAILABLE" } },
+        { new: true }
+      );
+
+      if (table) {
+        emitToRestaurant(restaurantId, "table:released", {
+          tableId: table._id.toString(),
+          tableNumber: table.tableNumber,
+          status: "AVAILABLE",
+        });
+        emitToRestaurant(restaurantId, "table:status-updated", {
+          tableId: table._id.toString(),
+          status: "AVAILABLE",
+        });
+      }
+    }
+  }
 
   // 13. Audit Log
   await logSecurityEvent({

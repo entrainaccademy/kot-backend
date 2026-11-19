@@ -40,6 +40,7 @@ export const addOrderItemsSchema = z.object({
   items: z
     .array(createOrderItemInputSchema)
     .min(1, "At least one item is required to add to order"),
+  idempotencyKey: z.string().trim().optional(),
 });
 
 export const updateOrderItemSchema = z.object({
